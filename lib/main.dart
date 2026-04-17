@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 void main() {
@@ -208,11 +210,16 @@ class _ScanScreenState extends State<ScanScreen> {
   final MobileScannerController _controller = MobileScannerController(
     detectionSpeed: DetectionSpeed.noDuplicates,
   );
+  final _ProductLookupService _productLookupService = _ProductLookupService();
 
   Barcode? _scannedBarcode;
   String? _scannedValue;
   String? _cameraError;
+  _ProductLookupResult? _productLookupResult;
+  String? _productLookupMessage;
+  bool _isLoadingProductDetails = false;
   bool _isStopping = false;
+  int _lookupGeneration = 0;
 
   @override
   void dispose() {
@@ -248,13 +255,20 @@ class _ScanScreenState extends State<ScanScreen> {
         });
       }
     }
+
+    await _loadProductDetails(barcode);
   }
 
   Future<void> _scanAgain() async {
+    _lookupGeneration++;
+
     setState(() {
       _scannedBarcode = null;
       _scannedValue = null;
       _cameraError = null;
+      _productLookupResult = null;
+      _productLookupMessage = null;
+      _isLoadingProductDetails = false;
     });
 
     await _controller.start();
@@ -268,6 +282,77 @@ class _ScanScreenState extends State<ScanScreen> {
 
     final Uri? uri = Uri.tryParse(value);
     return uri != null && uri.hasScheme && uri.host.isNotEmpty;
+  }
+
+  bool get _showResultOverlay {
+    return _scannedBarcode != null ||
+        _isLoadingProductDetails ||
+        _productLookupResult != null ||
+        _productLookupMessage != null;
+  }
+
+  Future<void> _loadProductDetails(Barcode barcode) async {
+    final String? code = _extractLookupCode(barcode);
+    if (code == null) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _productLookupResult = null;
+        _productLookupMessage =
+            'No online product lookup for this scan. Product details work best with retail barcodes such as EAN or UPC.';
+        _isLoadingProductDetails = false;
+      });
+      return;
+    }
+
+    final int generation = ++_lookupGeneration;
+    setState(() {
+      _isLoadingProductDetails = true;
+      _productLookupResult = null;
+      _productLookupMessage = 'Looking up product details...';
+    });
+
+    try {
+      final _ProductLookupResult? result = await _productLookupService.lookup(
+        code,
+      );
+
+      if (!mounted || generation != _lookupGeneration) {
+        return;
+      }
+
+      setState(() {
+        _isLoadingProductDetails = false;
+        _productLookupResult = result;
+        _productLookupMessage = result == null
+            ? 'No product details were found in the public food or beauty databases for barcode $code.'
+            : null;
+      });
+    } catch (_) {
+      if (!mounted || generation != _lookupGeneration) {
+        return;
+      }
+
+      setState(() {
+        _isLoadingProductDetails = false;
+        _productLookupResult = null;
+        _productLookupMessage =
+            'Could not fetch product details right now. Check your internet connection and try again.';
+      });
+    }
+  }
+
+  String? _extractLookupCode(Barcode barcode) {
+    final String candidate = (barcode.rawValue ?? barcode.displayValue ?? '')
+        .trim();
+
+    if (RegExp(r'^\d{8,18}$').hasMatch(candidate)) {
+      return candidate;
+    }
+
+    return null;
   }
 
   List<_ScanDetail> get _scanDetails {
@@ -389,99 +474,169 @@ class _ScanScreenState extends State<ScanScreen> {
               },
             ),
           ),
-          Align(
-            alignment: Alignment.bottomCenter,
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.fromLTRB(20, 18, 20, 24),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(28),
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.10),
-                    blurRadius: 20,
-                    offset: const Offset(0, -8),
-                  ),
-                ],
-              ),
+          if (!_showResultOverlay)
+            Align(
+              alignment: Alignment.bottomCenter,
               child: SafeArea(
                 top: false,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _scannedValue == null
-                          ? 'Point the camera at a QR code or barcode.'
-                          : _isLink
-                          ? 'Scanned link'
-                          : 'Scanned code',
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
+                child: Container(
+                  margin: const EdgeInsets.all(20),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 18,
+                    vertical: 14,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.65),
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: Text(
+                    'Point the camera at a QR code or barcode.',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
                     ),
-                    const SizedBox(height: 10),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF0FDFA),
-                        borderRadius: BorderRadius.circular(18),
-                        border: Border.all(color: const Color(0xFF99F6E4)),
-                      ),
-                      child: Text(
-                        _cameraError ??
-                            _scannedValue ??
-                            'No result yet. Tap Scan Again after a successful scan if you want to scan another code.',
-                        style: theme.textTheme.bodyLarge?.copyWith(height: 1.4),
-                      ),
+                  ),
+                ),
+              ),
+            ),
+          IgnorePointer(
+            ignoring: !_showResultOverlay,
+            child: AnimatedSlide(
+              duration: const Duration(milliseconds: 320),
+              curve: Curves.easeOutCubic,
+              offset: _showResultOverlay ? Offset.zero : const Offset(0, 1),
+              child: AnimatedOpacity(
+                duration: const Duration(milliseconds: 220),
+                opacity: _showResultOverlay ? 1 : 0,
+                child: Container(
+                  width: double.infinity,
+                  height: double.infinity,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFFF8FAFC),
+                    borderRadius: BorderRadius.vertical(
+                      top: Radius.circular(5),
                     ),
-                    if (_scanDetails.isNotEmpty) ...[
-                      const SizedBox(height: 16),
-                      Text(
-                        'Scan details',
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w700,
+                  ),
+                  child: SafeArea(
+                    bottom: false,
+                    child: Column(
+                      children: [
+                        const SizedBox(height: 10),
+                        Container(
+                          width: 58,
+                          height: 6,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFCBD5E1),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 10),
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(18),
-                          border: Border.all(color: const Color(0xFFD1FAE5)),
-                        ),
-                        child: Column(
-                          children: [
-                            for (final detail in _scanDetails)
-                              _ScanDetailRow(detail: detail),
-                          ],
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 16),
-                    SizedBox(
-                      width: double.infinity,
-                      child: FilledButton(
-                        onPressed: _scanAgain,
-                        child: const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 14),
-                          child: Text(
-                            'Scan Again',
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w700,
+                        Expanded(
+                          child: SingleChildScrollView(
+                            padding: const EdgeInsets.fromLTRB(20, 18, 20, 24),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  _isLink ? 'Scanned link' : 'Scanned code',
+                                  style: theme.textTheme.headlineSmall
+                                      ?.copyWith(fontWeight: FontWeight.w800),
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  'The overlay opens after each scan and you can scroll through all available details here.',
+                                  style: theme.textTheme.bodyMedium?.copyWith(
+                                    color: Colors.black54,
+                                    height: 1.4,
+                                  ),
+                                ),
+                                const SizedBox(height: 18),
+                                Container(
+                                  width: double.infinity,
+                                  padding: const EdgeInsets.all(16),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFF0FDFA),
+                                    borderRadius: BorderRadius.circular(18),
+                                    border: Border.all(
+                                      color: const Color(0xFF99F6E4),
+                                    ),
+                                  ),
+                                  child: Text(
+                                    _cameraError ??
+                                        _scannedValue ??
+                                        'No result yet.',
+                                    style: theme.textTheme.bodyLarge?.copyWith(
+                                      height: 1.4,
+                                    ),
+                                  ),
+                                ),
+                                if (_scanDetails.isNotEmpty) ...[
+                                  const SizedBox(height: 20),
+                                  Text(
+                                    'Scan details',
+                                    style: theme.textTheme.titleMedium
+                                        ?.copyWith(fontWeight: FontWeight.w700),
+                                  ),
+                                  const SizedBox(height: 10),
+                                  Container(
+                                    width: double.infinity,
+                                    padding: const EdgeInsets.all(16),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(18),
+                                      border: Border.all(
+                                        color: const Color(0xFFD1FAE5),
+                                      ),
+                                    ),
+                                    child: Column(
+                                      children: [
+                                        for (final detail in _scanDetails)
+                                          _ScanDetailRow(detail: detail),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                                const SizedBox(height: 20),
+                                Text(
+                                  'Product details',
+                                  style: theme.textTheme.titleMedium?.copyWith(
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                const SizedBox(height: 10),
+                                _ProductLookupCard(
+                                  result: _productLookupResult,
+                                  isLoading: _isLoadingProductDetails,
+                                  message:
+                                      _productLookupMessage ??
+                                      'Scan a retail barcode to load online product information.',
+                                ),
+                                const SizedBox(height: 20),
+                                SizedBox(
+                                  width: double.infinity,
+                                  child: FilledButton(
+                                    onPressed: _scanAgain,
+                                    child: const Padding(
+                                      padding: EdgeInsets.symmetric(
+                                        vertical: 14,
+                                      ),
+                                      child: Text(
+                                        'Scan Again',
+                                        style: TextStyle(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                         ),
-                      ),
+                      ],
                     ),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -688,4 +843,310 @@ class _ScanDetailRow extends StatelessWidget {
       ),
     );
   }
+}
+
+class _ProductLookupCard extends StatelessWidget {
+  const _ProductLookupCard({
+    required this.result,
+    required this.isLoading,
+    required this.message,
+  });
+
+  final _ProductLookupResult? result;
+  final bool isLoading;
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final _ProductLookupResult? lookup = result;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFE5E7EB)),
+      ),
+      child: Builder(
+        builder: (context) {
+          if (isLoading) {
+            return const Row(
+              children: [
+                SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2.4),
+                ),
+                SizedBox(width: 12),
+                Expanded(child: Text('Looking up product details...')),
+              ],
+            );
+          }
+
+          if (lookup == null) {
+            return Text(
+              message,
+              style: theme.textTheme.bodyMedium?.copyWith(height: 1.4),
+            );
+          }
+
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (lookup.imageUrl != null) ...[
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(14),
+                  child: Image.network(
+                    lookup.imageUrl!,
+                    height: 140,
+                    width: double.infinity,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                  ),
+                ),
+                const SizedBox(height: 14),
+              ],
+              Text(
+                lookup.title,
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              if (lookup.subtitle != null) ...[
+                const SizedBox(height: 4),
+                Text(
+                  lookup.subtitle!,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: Colors.black54,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 8),
+              Text(
+                'Source: ${lookup.source}',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: const Color(0xFF0F766E),
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 12),
+              for (final detail in lookup.details)
+                _ScanDetailRow(detail: detail),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _ProductLookupResult {
+  const _ProductLookupResult({
+    required this.source,
+    required this.title,
+    required this.details,
+    this.subtitle,
+    this.imageUrl,
+  });
+
+  final String source;
+  final String title;
+  final String? subtitle;
+  final String? imageUrl;
+  final List<_ScanDetail> details;
+}
+
+class _ProductLookupService {
+  static const Map<String, String> _headers = <String, String>{
+    'User-Agent': 'ScannerApp/1.0 (local-app)',
+    'Accept': 'application/json',
+  };
+
+  static const List<_ProductApiSource> _sources = <_ProductApiSource>[
+    _ProductApiSource(
+      label: 'Open Food Facts',
+      host: 'world.openfoodfacts.org',
+    ),
+    _ProductApiSource(
+      label: 'Open Beauty Facts',
+      host: 'world.openbeautyfacts.org',
+    ),
+  ];
+
+  Future<_ProductLookupResult?> lookup(String barcode) async {
+    for (final source in _sources) {
+      final _ProductLookupResult? result = await _fetchFromSource(
+        barcode,
+        source,
+      );
+      if (result != null) {
+        return result;
+      }
+    }
+    return null;
+  }
+
+  Future<_ProductLookupResult?> _fetchFromSource(
+    String barcode,
+    _ProductApiSource source,
+  ) async {
+    final Uri uri = Uri.https(source.host, '/api/v2/product/$barcode.json', <
+      String,
+      String
+    >{
+      'fields':
+          'code,product_name,generic_name,brands,brand_owner,quantity,packaging,categories,labels,countries,stores,manufacturing_places,origins,ingredients_text,allergens,traces,nutriscore_grade,nova_group,ecoscore_grade,serving_size,expiration_date,image_url,image_front_url,product_quantity,periods_after_opening',
+    });
+
+    final http.Response response = await http.get(uri, headers: _headers);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      return null;
+    }
+
+    final dynamic decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic>) {
+      return null;
+    }
+
+    final dynamic productDynamic = decoded['product'];
+    final dynamic statusDynamic = decoded['status'];
+
+    if (statusDynamic is num && statusDynamic == 0) {
+      return null;
+    }
+
+    if (productDynamic is! Map<String, dynamic> || productDynamic.isEmpty) {
+      return null;
+    }
+
+    return _mapProduct(source.label, productDynamic, barcode);
+  }
+
+  _ProductLookupResult? _mapProduct(
+    String source,
+    Map<String, dynamic> product,
+    String barcode,
+  ) {
+    final String? title = _pickFirstString(product, <String>[
+      'product_name',
+      'generic_name',
+      'code',
+    ]);
+
+    if (title == null) {
+      return null;
+    }
+
+    final details = <_ScanDetail>[];
+
+    void add(String label, dynamic value) {
+      final String? text = _stringValue(value);
+      if (text == null) {
+        return;
+      }
+      details.add(_ScanDetail(label, text));
+    }
+
+    add('Barcode', barcode);
+    add('Name', product['product_name']);
+    add('Generic name', product['generic_name']);
+    add('Brand', product['brands']);
+    add('Brand owner', product['brand_owner']);
+    add('Quantity', product['quantity'] ?? product['product_quantity']);
+    add('Packaging', product['packaging']);
+    add('Categories', product['categories']);
+    add('Labels', product['labels']);
+    add('Countries', product['countries']);
+    add('Stores', product['stores']);
+    add('Manufacturing places', product['manufacturing_places']);
+    add('Origins', product['origins']);
+    add('Ingredients', product['ingredients_text']);
+    add('Allergens', product['allergens']);
+    add('Traces', product['traces']);
+    add('Serving size', product['serving_size']);
+    add('Expiry date', product['expiration_date']);
+    add('Nutri-Score', _upperValue(product['nutriscore_grade']));
+    add('NOVA group', _novaValue(product['nova_group']));
+    add('Eco-Score', _upperValue(product['ecoscore_grade']));
+    add('Period after opening', product['periods_after_opening']);
+
+    final String? imageUrl = _pickFirstString(product, <String>[
+      'image_front_url',
+      'image_url',
+    ]);
+
+    return _ProductLookupResult(
+      source: source,
+      title: title,
+      subtitle: _pickFirstString(product, <String>['brands', 'categories']),
+      imageUrl: imageUrl,
+      details: details,
+    );
+  }
+
+  String? _pickFirstString(Map<String, dynamic> map, List<String> keys) {
+    for (final key in keys) {
+      final String? value = _stringValue(map[key]);
+      if (value != null) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  String? _stringValue(dynamic value) {
+    if (value == null) {
+      return null;
+    }
+
+    if (value is String) {
+      final String cleaned = value.trim();
+      return cleaned.isEmpty ? null : cleaned;
+    }
+
+    if (value is num) {
+      return value.toString();
+    }
+
+    if (value is List) {
+      final List<String> items = value
+          .map(_stringValue)
+          .whereType<String>()
+          .toSet()
+          .toList();
+      if (items.isEmpty) {
+        return null;
+      }
+      return items.join(', ');
+    }
+
+    if (value is Map) {
+      return null;
+    }
+
+    final String cleaned = value.toString().trim();
+    return cleaned.isEmpty ? null : cleaned;
+  }
+
+  String? _upperValue(dynamic value) {
+    final String? text = _stringValue(value);
+    return text?.toUpperCase();
+  }
+
+  String? _novaValue(dynamic value) {
+    final String? text = _stringValue(value);
+    if (text == null) {
+      return null;
+    }
+    return 'Group $text';
+  }
+}
+
+class _ProductApiSource {
+  const _ProductApiSource({required this.label, required this.host});
+
+  final String label;
+  final String host;
 }
