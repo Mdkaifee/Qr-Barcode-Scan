@@ -159,29 +159,6 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Container(
-              //   width: double.infinity,
-              //   padding: const EdgeInsets.all(24),
-              //   decoration: BoxDecoration(
-              //     borderRadius: BorderRadius.circular(28),
-              //     gradient: const LinearGradient(
-              //       colors: [Color(0xFF0F766E), Color(0xFF14B8A6)],
-              //       begin: Alignment.topLeft,
-              //       end: Alignment.bottomRight,
-              //     ),
-              //   ),
-              //   // child: const Column(
-              //   //   crossAxisAlignment: CrossAxisAlignment.start,
-              //   //   children: [
-              //   //     Icon(
-              //   //       Icons.center_focus_strong_rounded,
-              //   //       size: 44,
-              //   //       color: Colors.white,
-              //   //     ),
-              //   //   ],
-              //   // ),
-              // ),
-              // const Spacer(),
               SizedBox(
                 width: double.infinity,
                 child: FilledButton.icon(
