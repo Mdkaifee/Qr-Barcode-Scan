@@ -2,8 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() {
   runApp(const MyApp());
@@ -96,15 +98,6 @@ class _SplashScreenState extends State<SplashScreen> {
                 Text(
                   'QR and barcode reader',
                   style: TextStyle(color: Colors.white70, fontSize: 16),
-                ),
-                SizedBox(height: 28),
-                SizedBox(
-                  width: 36,
-                  height: 36,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 3,
-                    color: Colors.white,
-                  ),
                 ),
               ],
             ),
@@ -271,7 +264,7 @@ class _ManualLookupScreenState extends State<ManualLookupScreen> {
         _isLoading = false;
         _productLookupResult = result;
         _productLookupMessage = result == null
-            ? 'No product details were found in the public food or beauty databases for barcode ${widget.barcode}.'
+            ? 'No product details were found in the public food, beauty, or general product databases for barcode ${widget.barcode}.'
             : null;
       });
     } catch (_) {
@@ -336,6 +329,7 @@ class _ManualLookupScreenState extends State<ManualLookupScreen> {
                 message:
                     _productLookupMessage ??
                     'Enter a barcode number on the home screen to search for a product.',
+                fallbackBarcode: widget.barcode,
               ),
             ],
           ),
@@ -473,7 +467,7 @@ class _ScanScreenState extends State<ScanScreen> {
         _isLoadingProductDetails = false;
         _productLookupResult = result;
         _productLookupMessage = result == null
-            ? 'No product details were found in the public food or beauty databases for barcode $code.'
+            ? 'No product details were found in the public food, beauty, or general product databases for barcode $code.'
             : null;
       });
     } catch (_) {
@@ -756,6 +750,9 @@ class _ScanScreenState extends State<ScanScreen> {
                                   message:
                                       _productLookupMessage ??
                                       'Scan a retail barcode to load online product information.',
+                                  fallbackBarcode: _scannedBarcode == null
+                                      ? null
+                                      : _extractLookupCode(_scannedBarcode!),
                                 ),
                                 const SizedBox(height: 20),
                                 SizedBox(
@@ -996,11 +993,13 @@ class _ProductLookupCard extends StatelessWidget {
     required this.result,
     required this.isLoading,
     required this.message,
+    this.fallbackBarcode,
   });
 
   final _ProductLookupResult? result;
   final bool isLoading;
   final String message;
+  final String? fallbackBarcode;
 
   @override
   Widget build(BuildContext context) {
@@ -1032,9 +1031,32 @@ class _ProductLookupCard extends StatelessWidget {
           }
 
           if (lookup == null) {
-            return Text(
-              message,
-              style: theme.textTheme.bodyMedium?.copyWith(height: 1.4),
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  message,
+                  style: theme.textTheme.bodyMedium?.copyWith(height: 1.4),
+                ),
+                if (fallbackBarcode != null) ...[
+                  const SizedBox(height: 14),
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      unawaited(_openGs1Page(context, fallbackBarcode!));
+                    },
+                    icon: const Icon(Icons.open_in_new_rounded),
+                    label: const Text('Check on GS1'),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'GS1 may still show licence or company information even when full product details are unavailable.',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: Colors.black54,
+                      height: 1.35,
+                    ),
+                  ),
+                ],
+              ],
             );
           }
 
@@ -1088,6 +1110,40 @@ class _ProductLookupCard extends StatelessWidget {
   }
 }
 
+Future<void> _openGs1Page(BuildContext context, String barcode) async {
+  final Uri uri = Uri.https(
+    'gs1.org',
+    '/services/verified-by-gs1/results',
+    <String, String>{'gtin': barcode},
+  );
+
+  try {
+    final bool launched = await launchUrl(
+      uri,
+      mode: LaunchMode.externalApplication,
+    );
+    if (!launched && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open the GS1 page.')),
+      );
+    }
+  } on MissingPluginException {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Restart the app once, then try opening GS1 again.'),
+        ),
+      );
+    }
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open the GS1 page.')),
+      );
+    }
+  }
+}
+
 class _ProductLookupResult {
   const _ProductLookupResult({
     required this.source,
@@ -1109,6 +1165,7 @@ class _ProductLookupService {
     'User-Agent': 'ScannerApp/1.0 (local-app)',
     'Accept': 'application/json',
   };
+  static const String _goUpcApiKey = String.fromEnvironment('GO_UPC_API_KEY');
 
   static const List<_ProductApiSource> _sources = <_ProductApiSource>[
     _ProductApiSource(
@@ -1118,6 +1175,10 @@ class _ProductLookupService {
     _ProductApiSource(
       label: 'Open Beauty Facts',
       host: 'world.openbeautyfacts.org',
+    ),
+    _ProductApiSource(
+      label: 'Open Products Facts',
+      host: 'world.openproductsfacts.org',
     ),
   ];
 
@@ -1131,6 +1192,14 @@ class _ProductLookupService {
         return result;
       }
     }
+
+    if (_goUpcApiKey.isNotEmpty) {
+      final _ProductLookupResult? result = await _fetchFromGoUpc(barcode);
+      if (result != null) {
+        return result;
+      }
+    }
+
     return null;
   }
 
@@ -1168,6 +1237,38 @@ class _ProductLookupService {
     }
 
     return _mapProduct(source.label, productDynamic, barcode);
+  }
+
+  Future<_ProductLookupResult?> _fetchFromGoUpc(String barcode) async {
+    final Uri uri = Uri.https('go-upc.com', '/api/v1/code/$barcode');
+
+    final http.Response response = await http.get(
+      uri,
+      headers: <String, String>{
+        'Authorization': 'Bearer $_goUpcApiKey',
+        'Accept': 'application/json',
+      },
+    );
+
+    if (response.statusCode == 404 || response.statusCode == 401) {
+      return null;
+    }
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      return null;
+    }
+
+    final dynamic decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic>) {
+      return null;
+    }
+
+    final dynamic productDynamic = decoded['product'];
+    if (productDynamic is! Map<String, dynamic> || productDynamic.isEmpty) {
+      return null;
+    }
+
+    return _mapGoUpcProduct(decoded, productDynamic, barcode);
   }
 
   _ProductLookupResult? _mapProduct(
@@ -1228,6 +1329,61 @@ class _ProductLookupService {
       title: title,
       subtitle: _pickFirstString(product, <String>['brands', 'categories']),
       imageUrl: imageUrl,
+      details: details,
+    );
+  }
+
+  _ProductLookupResult? _mapGoUpcProduct(
+    Map<String, dynamic> root,
+    Map<String, dynamic> product,
+    String barcode,
+  ) {
+    final String? title = _pickFirstString(product, <String>['name']);
+    if (title == null) {
+      return null;
+    }
+
+    final details = <_ScanDetail>[];
+
+    void add(String label, dynamic value) {
+      final String? text = _stringValue(value);
+      if (text == null) {
+        return;
+      }
+      details.add(_ScanDetail(label, text));
+    }
+
+    add('Barcode', root['code'] ?? barcode);
+    add('Code type', root['codeType']);
+    add('Name', product['name']);
+    add('Brand', product['brand']);
+    add('Category', product['category']);
+    add('Category path', product['categoryPath']);
+    add('Description', product['description']);
+    add('UPC', product['upc']);
+    add('EAN', product['ean']);
+    add('Ingredients', (product['ingredients'] as Map?)?['text']);
+    add('Barcode page', root['barcodeUrl']);
+    add('Inferred', root['inferred']);
+
+    final dynamic specs = product['specs'];
+    if (specs is List) {
+      for (final dynamic spec in specs) {
+        if (spec is List && spec.length >= 2) {
+          final String? key = _stringValue(spec[0]);
+          final String? value = _stringValue(spec[1]);
+          if (key != null && value != null) {
+            details.add(_ScanDetail(key, value));
+          }
+        }
+      }
+    }
+
+    return _ProductLookupResult(
+      source: 'Go-UPC',
+      title: title,
+      subtitle: _pickFirstString(product, <String>['brand', 'category']),
+      imageUrl: _pickFirstString(product, <String>['imageUrl']),
       details: details,
     );
   }
