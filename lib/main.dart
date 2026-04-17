@@ -115,8 +115,40 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 }
 
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  final TextEditingController _barcodeController = TextEditingController();
+
+  @override
+  void dispose() {
+    _barcodeController.dispose();
+    super.dispose();
+  }
+
+  void _submitBarcode() {
+    final String? barcode = _normalizeBarcodeInput(_barcodeController.text);
+    if (barcode == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Enter a valid barcode number with 8 to 18 digits.'),
+        ),
+      );
+      return;
+    }
+
+    FocusScope.of(context).unfocus();
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ManualLookupScreen(barcode: barcode),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -127,47 +159,29 @@ class HomeScreen extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(28),
-                  gradient: const LinearGradient(
-                    colors: [Color(0xFF0F766E), Color(0xFF14B8A6)],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
-                ),
-                child: const Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Icon(
-                      Icons.center_focus_strong_rounded,
-                      size: 44,
-                      color: Colors.white,
-                    ),
-                    SizedBox(height: 16),
-                    Text(
-                      'Ready to scan',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 28,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    SizedBox(height: 8),
-                    Text(
-                      'Tap the button below to open the camera and scan any QR code or barcode.',
-                      style: TextStyle(
-                        color: Colors.white70,
-                        fontSize: 16,
-                        height: 1.4,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const Spacer(),
+              // Container(
+              //   width: double.infinity,
+              //   padding: const EdgeInsets.all(24),
+              //   decoration: BoxDecoration(
+              //     borderRadius: BorderRadius.circular(28),
+              //     gradient: const LinearGradient(
+              //       colors: [Color(0xFF0F766E), Color(0xFF14B8A6)],
+              //       begin: Alignment.topLeft,
+              //       end: Alignment.bottomRight,
+              //     ),
+              //   ),
+              //   // child: const Column(
+              //   //   crossAxisAlignment: CrossAxisAlignment.start,
+              //   //   children: [
+              //   //     Icon(
+              //   //       Icons.center_focus_strong_rounded,
+              //   //       size: 44,
+              //   //       color: Colors.white,
+              //   //     ),
+              //   //   ],
+              //   // ),
+              // ),
+              // const Spacer(),
               SizedBox(
                 width: double.infinity,
                 child: FilledButton.icon(
@@ -190,6 +204,161 @@ class HomeScreen extends StatelessWidget {
                     ),
                   ),
                 ),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: _barcodeController,
+                keyboardType: TextInputType.number,
+                textInputAction: TextInputAction.search,
+                onSubmitted: (_) => _submitBarcode(),
+                decoration: InputDecoration(
+                  labelText: 'Enter barcode number',
+                  hintText: 'Example: 8901491101833',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(18),
+                    borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(18),
+                    borderSide: const BorderSide(
+                      color: Color(0xFF0F766E),
+                      width: 1.6,
+                    ),
+                  ),
+                  suffixIcon: Padding(
+                    padding: const EdgeInsets.all(6),
+                    child: FilledButton(
+                      onPressed: _submitBarcode,
+                      style: FilledButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 14),
+                        minimumSize: const Size(0, 48),
+                      ),
+                      child: const Text('Submit'),
+                    ),
+                  ),
+                  suffixIconConstraints: const BoxConstraints(
+                    minWidth: 0,
+                    minHeight: 0,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class ManualLookupScreen extends StatefulWidget {
+  const ManualLookupScreen({super.key, required this.barcode});
+
+  final String barcode;
+
+  @override
+  State<ManualLookupScreen> createState() => _ManualLookupScreenState();
+}
+
+class _ManualLookupScreenState extends State<ManualLookupScreen> {
+  final _ProductLookupService _productLookupService = _ProductLookupService();
+
+  _ProductLookupResult? _productLookupResult;
+  String? _productLookupMessage;
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadProductDetails();
+  }
+
+  Future<void> _loadProductDetails() async {
+    setState(() {
+      _isLoading = true;
+      _productLookupMessage = 'Looking up product details...';
+    });
+
+    try {
+      final _ProductLookupResult? result = await _productLookupService.lookup(
+        widget.barcode,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isLoading = false;
+        _productLookupResult = result;
+        _productLookupMessage = result == null
+            ? 'No product details were found in the public food or beauty databases for barcode ${widget.barcode}.'
+            : null;
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isLoading = false;
+        _productLookupResult = null;
+        _productLookupMessage =
+            'Could not fetch product details right now. Check your internet connection and try again.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Product Details')),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Entered barcode',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF0FDFA),
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: const Color(0xFF99F6E4)),
+                ),
+                child: Text(
+                  widget.barcode,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              Text(
+                'Product details',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 10),
+              _ProductLookupCard(
+                result: _productLookupResult,
+                isLoading: _isLoading,
+                message:
+                    _productLookupMessage ??
+                    'Enter a barcode number on the home screen to search for a product.',
               ),
             ],
           ),
@@ -1149,4 +1318,12 @@ class _ProductApiSource {
 
   final String label;
   final String host;
+}
+
+String? _normalizeBarcodeInput(String input) {
+  final String digitsOnly = input.replaceAll(RegExp(r'\D'), '');
+  if (digitsOnly.length < 8 || digitsOnly.length > 18) {
+    return null;
+  }
+  return digitsOnly;
 }
